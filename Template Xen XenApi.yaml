@@ -1,0 +1,202 @@
+zabbix_export:
+  version: '6.0'
+  date: '2022-02-20T22:12:10Z'
+  groups:
+    -
+      uuid: 02e4df4f20b848e79267641790f241da
+      name: Templates/Virtualization
+    -
+      uuid: 137f19e6e2dc4219b33553b812627bc2
+      name: 'Virtual machines'
+  templates:
+    -
+      uuid: fcddd509760548b49a69c44080937006
+      template: 'Template Xen XenApi'
+      name: 'Template Xen XenApi'
+      description: 'please set {$POOLPASS}, {$POOLUSER}'
+      groups:
+        -
+          name: Templates/Virtualization
+      discovery_rules:
+        -
+          uuid: b379fade8ee4401fb6dd964d9ad27e5e
+          name: 'XEN Pool VM Discovery'
+          type: SCRIPT
+          key: xapi.vmdiscovery
+          delay: 1h
+          params: |
+            var XAPI ={
+                address : "",
+                user : "",
+                password : "",
+            
+                login: function () {
+                    // returns {status, sessionID}
+                    XAPI.session = {};
+                    var resp, rpcReturn = {};
+                    var req = new HttpRequest();
+            
+                    var data_json = {
+                        "methodCall": {
+                            "methodName": "session.login_with_password",
+                            "params": {
+                                "param": [ 
+                                    {"value": { "string": XAPI.user}},
+                                    {"value": {	"string": XAPI.password}},
+                                    {"value": {	"string": "'1.0"}},
+                                    {"value": {	"string": "zabbix-integration"}}
+                                ]
+                            }
+                        }
+                    };
+                    
+                    console.warn("[XAPI integration] inside Login");
+            
+                    req.addHeader('Content-Type: text/xml');
+                    resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
+                    resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
+                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        if (member.name == "Status") {
+                            rpcReturn.status = member.value;
+                        } else if (member.name == "Value") {
+                            //rpcReturn = {"sessionId": member.value };
+                            XAPI.session = member.value;
+                        }
+                    });
+                    //if methodResponse.params.value.struct.member[i].value == "Status"
+                    return rpcReturn;
+                },
+            
+                makeCall: function(methodName){
+                    var params = [ {"value": { "string": XAPI.session}} ];
+                    var req = new HttpRequest();
+                    var rpcReturn = {};
+            
+                    console.warn("[XAPI integration] inside makeCall");
+            
+                    for (var i=1; i<arguments.length; i++){
+                        params.push({"value": { "string": arguments[i]}})
+                        console.warn(JSON.stringify(params));
+                    };
+                    var data_json = {
+                        "methodCall": {
+                            "methodName": methodName,
+                            "params": { "param": params }
+                        }
+                    };
+            
+                    req.addHeader('Content-Type: text/xml');
+                    resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
+                    resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
+                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        if (member.name == "Status") {
+                            rpcReturn.status = member.value;
+                        }
+                    });
+                    if (rpcReturn.status == "Success"){  
+                        resp.methodResponse.params.param.value.struct.member.forEach(function (member) {    
+                            if (member.name == "Value") {
+                                try{
+                                    if (typeof(member.value) === "object" ){
+                                        if (typeof member.value.boolean != 'undefined'){
+                                            if (member.value.boolean == "1") { rpcReturn.value = true; }
+                                            else { rpcReturn.value = false; }
+                                        }
+                                        if (typeof member.value.array.data  != 'undefined'){
+                                            rpcReturn.value = member.value.array.data.value;
+                                        }
+                                    }
+                                    if (typeof(member.value) === "string" ){
+                                        rpcReturn.value = member.value ;
+                                    }
+                                }
+                                catch (error) {
+                                    console.warn("[XAPI integration] makeCall " + error);
+                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member.value));
+                                    //throw 'API call failed: ' + error;
+                                }
+                            }
+                        });
+                    }
+                    //if methodResponse.params.value.struct.member[i].value == "Status"
+                    if (rpcReturn.status){
+                        return rpcReturn.value;
+                    } else {
+                        return "Failure";
+                    }
+            
+                }
+            };
+            
+            
+            function vmDiscovery() {
+                var guests = [];  
+                var hostRef = XAPI.makeCall("VM.get_all");
+                //console.warn(JSON.stringify(hostRef));
+                hostRef.forEach(function (ref) {
+                    var vm = {};
+                    //vm.name = XAPI.makeCall("VM.get_name_label",ref);
+                    //vm.uuid = XAPI.makeCall("VM.get_uuid",ref);
+                    //vm.template = XAPI.makeCall("VM.get_is_a_template",ref);
+                    //vm.snapshot = XAPI.makeCall("VM.get_is_a_snapshot",ref)
+            
+                    if (!XAPI.makeCall("VM.get_is_a_template",ref)){
+                        if (!XAPI.makeCall("VM.get_is_a_snapshot",ref)){
+                            vm = {  '{#VMNAME}' : XAPI.makeCall("VM.get_name_label",ref),
+                                    '{#VMUUID}' : XAPI.makeCall("VM.get_uuid",ref) };
+                            (guests.push(vm));
+                        };
+                    }
+                });
+            
+                //return (JSON.stringify(XAPI.makeCall("VM.get_name_label",hostRef[0])));
+                return guests;
+            
+            
+                //return (JSON.stringify(XAPI.makeCall("VM.get_all")));
+            
+            };
+            
+            //console.warn(XML.toJson(resp));
+            //console.warn(resp.methodResponse);
+            
+            var params = JSON.parse(value)
+            
+            console.warn(JSON.stringify(params));
+            
+            
+            XAPI.address = params.host; // TODO make a setAddress method with http/https trimm
+            XAPI.user = params.user; // TODO make a setCredentials method
+            XAPI.password = params.password;
+            
+            if (XAPI.login().status == "Success"){
+                if (params.action == "vmdiscovery") {return (JSON.stringify(vmDiscovery())); }
+                else { return false };
+            } else { return false};
+          lifetime: 1d
+          host_prototypes:
+            -
+              uuid: b583ee3f49f94e0eb0f142ef3db29706
+              host: '{#VMUUID}'
+              name: '{#VMNAME}'
+              group_links:
+                -
+                  group:
+                    name: 'Virtual machines'
+              group_prototypes:
+                -
+                  name: '[XEN] {#VMNAME}'
+          timeout: 10s
+          parameters:
+            -
+              name: host
+              value: '{HOST.IP}'
+            -
+              name: user
+              value: '{$POOLUSER}'
+            -
+              name: password
+              value: '{$POOLPASS}'
+            -
+              name: action
+              value: vmdiscovery
