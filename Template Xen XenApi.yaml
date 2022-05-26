@@ -1,6 +1,6 @@
 zabbix_export:
   version: '6.0'
-  date: '2022-02-21T22:31:48Z'
+  date: '2022-02-27T22:59:38Z'
   groups:
     -
       uuid: 1b837a3c078647049a0c00c61b4d57b5
@@ -12,6 +12,560 @@ zabbix_export:
       uuid: 137f19e6e2dc4219b33553b812627bc2
       name: 'Virtual machines'
   templates:
+    -
+      uuid: ac557c6616d74f7b89383c985c58616c
+      template: 'Templae Xen XenApi Host'
+      name: 'Templae Xen XenApi Host'
+      groups:
+        -
+          name: Templates/Virtualization
+      items:
+        -
+          uuid: 8107a5612ec445b89ee8ff72249b9882
+          name: 'rrdstats raw item'
+          type: SCRIPT
+          key: xapi.host.rrdstats
+          history: 1d
+          trends: '0'
+          value_type: TEXT
+          params: |
+            var XAPI ={
+                address : "",
+                user : "",
+                password : "",
+            
+                login: function () {
+                    XAPI.session = {};
+                    var resp, rpcReturn = {};
+                    var req = new HttpRequest();
+            
+                    var data_json = {
+                        "methodCall": {
+                            "methodName": "session.login_with_password",
+                            "params": {
+                                "param": [ 
+                                    {"value": { "string": XAPI.user}},
+                                    {"value": {	"string": XAPI.password}},
+                                    {"value": {	"string": "'1.0"}},
+                                    {"value": {	"string": "zabbix-integration"}}
+                                ]
+                            }
+                        }
+                    };
+                    
+                    //console.warn("[XAPI integration] inside Login");
+            
+                    req.addHeader('Content-Type: text/xml');
+                    resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
+                    resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        if (member.name == "Status") {
+                            rpcReturn.status = member.value;
+                        } else if (member.name == "Value") {
+                            XAPI.session = member.value;
+                        }
+                    });
+                    return rpcReturn;
+                },
+            
+                makeCall: function(methodName){
+                    var params = [ {"value": { "string": XAPI.session}} ];
+                    var req = new HttpRequest();
+                    var rpcReturn = {};
+            
+                    //console.warn("[XAPI integration] inside makeCall");
+            
+                    for (var i=1; i<arguments.length; i++){
+                        params.push({"value": { "string": arguments[i]}})
+                        //console.warn(JSON.stringify(params));
+                    };
+                    var data_json = {
+                        "methodCall": {
+                            "methodName": methodName,
+                            "params": { "param": params }
+                        }
+                    };
+            
+                    req.addHeader('Content-Type: text/xml');
+                    resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
+                    resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        if (member.name == "Status") {
+                            rpcReturn.status = member.value;
+                        }
+                    });
+                    if (rpcReturn.status == "Success"){  
+                        resp.methodResponse.params.param.value.struct.member.forEach(function (member) {    
+                            if (member.name == "Value") {
+                                try{
+                                    if (typeof(member.value) === "object" ){
+                                        if (typeof member.value.boolean != 'undefined'){
+                                            if (member.value.boolean == "1") { rpcReturn.value = true; }
+                                            else { rpcReturn.value = false; }
+                                        }
+                                        if (typeof member.value["dateTime.iso8601"] != 'undefined' ){
+                                            rpcReturn.value = member.value["dateTime.iso8601"];
+                                        }
+                                        if (typeof member.value.array  != 'undefined'){
+                                            if (typeof member.value.array.data != 'undefined'){
+                                                rpcReturn.value = member.value.array.data.value;
+                                            }
+                                        }
+                                    }
+                                    if (typeof(member.value) === "string" ){
+                                        rpcReturn.value = member.value ;
+                                    }
+                                }
+                                catch (error) {
+                                    console.warn("[XAPI integration] makeCall " + error);
+                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member));
+                                }
+                            }
+                        });
+                    }
+                    if (rpcReturn.status){
+                        return rpcReturn.value;
+                    } else {
+                        return "Failure";
+                    }
+            
+                }
+            };
+            
+            function retriveStats(uuid,interval){
+                var req = new HttpRequest();
+                var stats = {};
+                var rrdStats = {};
+                var _serverTime = "";
+                var serverTime = null;
+                var epoch;
+            
+                var hostRef = XAPI.makeCall("host.get_all");
+                if (typeof hostRef === "string"){
+                    _serverTime = XAPI.makeCall("host.get_servertime",hostRef);
+                } else {
+                    hostRef.forEach(function (ref){
+                        _serverTime = XAPI.makeCall("host.get_servertime",ref[0]);
+                    })
+                }
+            
+                // 2022-02-22 23:09:54.500+01:00
+                // 2 02 20 22 2T 22:09:54Z
+             
+                serverTime = (  _serverTime.substring(0,4) + "-" + 
+                                _serverTime.substring(4,6) + "-" +
+                                _serverTime.substring(6,8) + " " +
+                                _serverTime.substring(9,17) + "+00:00" )
+            
+                console.warn("epoch" + Date.parse(serverTime));
+                //console.warn("czas " + serverTime);
+            
+                // curl -k --user root:czekolada https://10.112.136.113/rrd_updates?start=`date +%s`&host=true&cf=AVERAGE
+                // &uuid=x
+                // start=epoch
+                // host=true
+                // cf=AVERAGE|MIN|MAX
+            
+               
+            
+                epoch = Date.parse(serverTime);
+                epoch = ((epoch / 1000 ) - interval * 2); 
+            
+                console.warn("-epoch" + epoch);
+            
+            
+                req.setHttpAuth(HTTPAUTH_BASIC, XAPI.user, XAPI.password)
+            
+                //var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + epoch + "&cf=AVERAGE&uuid=" + uuid)
+                var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + 
+                        epoch + "&cf=AVERAGE&interval=" + interval +  "&host=true");
+            
+                console.warn(rrdUrl);
+                rrdStats = JSON.parse(XML.toJson(req.get(rrdUrl)));
+                //stats = (req.get(rrdUrl));
+                
+                //console.warn("data.row " + JSON.stringify(rrdStats.xport.data.row));
+            
+                var items = []
+                items = rrdStats.xport.meta.legend.entry;
+            
+                var values = []
+                if (typeof rrdStats.xport.data.row.v != "undefined"){
+                    values = rrdStats.xport.data.row.v
+                    //console.warn("v: "+JSON.stringify(values));
+                } else {
+                    values = rrdStats.xport.data.row[0].v
+                    //console.warn("[0]v: "+JSON.stringify(values));
+                }
+                
+            
+                
+            
+                //console.warn("items: "+JSON.stringify(items));
+                
+            
+                try{
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid
+                        iuuid = items[i].split(':')[2];
+                        //console.warn("uuid: " + iuuid);
+                        stats[iuuid] = {};
+                    };
+                
+                    //console.warn("stats: " + JSON.stringify(stats));
+                
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid,item,value;
+                        iuuid = items[i].split(':')[2];
+                        item = items[i].split(':')[3];
+                        value = values[i];
+                        stats[iuuid][item] = value;
+                        //console.warn("stats." + iuuid + "." + item + " = " + value );
+                    };
+            
+                }
+                catch (error) {
+                    console.warn("[XAPI integration] ERROR " + error);
+                }
+            
+                //console.warn("stats: " + JSON.stringify(stats));
+                XAPI.makeCall("session.logout");
+                if (typeof stats[uuid] != "undefined" ){
+                    return stats[uuid];
+                } else {
+                    return false
+                }
+            }
+            
+            function hostDiscovery(){
+                var hosts =[];
+                var hostRef = XAPI.makeCall("host.get_all");
+                if (typeof hostRef === "string"){
+                    //console.warn("host == string");
+                    var hostName = XAPI.makeCall("host.get_hostname",hostRef);
+                    var hostUUID = XAPI.makeCall("host.get_uuid",hostRef);
+                    hosts.push({
+                        '{#HNAME}'  : hostName,
+                        '{#HUUID}'  : hostUUID
+                    })
+                } else {
+                    hostRef.forEach(function (ref){
+                        var hostName = XAPI.makeCall("host.get_hostname",ref);
+                        var hostUUID = XAPI.makeCall("host.get_uuid",ref);
+                        hosts.push({
+                            '{#HNAME}'  : hostName,
+                            '{#HUUID}'  : hostUUID
+                        })
+                    })
+                }
+                XAPI.makeCall("session.logout");
+                return hosts;
+            }
+            
+            function vmDiscovery(){
+                var guests = [];
+                var hosts = XAPI.makeCall("host.get_all");
+                if (typeof hosts === "string"){
+                    var hostName = XAPI.makeCall("host.get_hostname",hosts);
+                    var hostUUID = XAPI.makeCall("host.get_uuid",hosts);
+                    XAPI.makeCall("host.get_resident_VMs",hosts).forEach(function (vmRef){
+                        var vm = {};
+                        if (!XAPI.makeCall("VM.get_is_a_template",vmRef)){
+                            if (!XAPI.makeCall("VM.get_is_a_snapshot",vmRef)){
+                                vm = {  '{#VMNAME}' : XAPI.makeCall("VM.get_name_label",vmRef),
+                                        '{#VMUUID}' : XAPI.makeCall("VM.get_uuid",vmRef),
+                                        '{#HNAME}'  : hostName,
+                                        '{#HUUID}'  : hostUUID };
+                                guests.push(vm);
+                            };
+                        }
+                    })
+                } else {
+                    hosts.forEach(function (hostRef){
+                        var hostName = XAPI.makeCall("host.get_hostname",hostRef);
+                        var hostUUID = XAPI.makeCall("host.get_uuid",hostRef);
+                        XAPI.makeCall("host.get_resident_VMs",hostRef).forEach(function (vmRef){
+                            var vm = {};
+                            if (!XAPI.makeCall("VM.get_is_a_template",vmRef)){
+                                if (!XAPI.makeCall("VM.get_is_a_snapshot",vmRef)){
+                                    vm = {  '{#VMNAME}' : XAPI.makeCall("VM.get_name_label",vmRef),
+                                            '{#VMUUID}' : XAPI.makeCall("VM.get_uuid",vmRef),
+                                            '{#HNAME}'  : hostName,
+                                            '{#HUUID}'  : hostUUID };
+                                    guests.push(vm);
+                                };
+                            }
+                        })
+                    });
+                }
+                XAPI.makeCall("session.logout");
+                return guests;
+            };
+            
+            var params = JSON.parse(value)
+            var uuid = params.uuid
+            var interval = params.interval
+            //var interval = 60 //seconds for agregate
+            
+            XAPI.address = params.host; // TODO make a setAddress method with http/https trimm
+            XAPI.user = params.user; // TODO make a setCredentials method
+            XAPI.password = params.password;
+            
+            
+            console.warn("[XAPI integration] " + params.action);
+            if (XAPI.login().status == "Success"){
+                switch (params.action) {
+                    case 'vmdiscovery':
+                        return (JSON.stringify(vmDiscovery()));
+                    case 'hostdiscovery':
+                        return (JSON.stringify(hostDiscovery()));
+                    case 'retrivevmstats':
+                        return (JSON.stringify(retriveStats(uuid,interval)));
+                    default:
+                        return false;
+                }
+            } else { return false};
+          timeout: 10s
+          parameters:
+            -
+              name: host
+              value: '{HOST.IP}'
+            -
+              name: action
+              value: retrivevmstats
+            -
+              name: interval
+              value: '60'
+            -
+              name: user
+              value: '{$POOLUSER}'
+            -
+              name: uuid
+              value: '{$HUUID}'
+            -
+              name: password
+              value: '{$POOLPASS}'
+        -
+          uuid: ce1039ed7e104c04a1cacd9d69546658
+          name: 'CPU Average Usage'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.cpu_avg
+          delay: '0'
+          value_type: FLOAT
+          units: '%'
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.cpu_avg
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: f463e181e40b4e86a0c6dfb36aa4f337
+          name: 'System Load'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.loadavg
+          delay: '0'
+          value_type: FLOAT
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.loadavg
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: 2bf65b1977dd4b4e8c255786a5467693
+          name: 'Memory Free'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.memory_free_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.memory_free_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: d3776eae929d45688fbdec74f1b5b2f7
+          name: 'Memory reclaimed'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.memory_reclaimed
+          delay: '0'
+          value_type: FLOAT
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.memory_reclaimed
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: 172661b6301f4b56a29b97505537ee9c
+          name: 'Memory reclaimed max'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.memory_reclaimed_max
+          delay: '0'
+          value_type: FLOAT
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.memory_reclaimed_max
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: bb5bde88a34e4b7f985ecc64ca066397
+          name: 'Memory total'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.memory_total_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.memory_total_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: fa2f005aa3f44d0087d0c7da2710b256
+          name: 'Number of pool sessions'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.pool_session_count
+          delay: '0'
+          value_type: FLOAT
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_open_fds
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: fb8cf2cd8b174abeb49c1ba253e06930
+          name: 'Number of pool tasks'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.pool_task_count
+          delay: '0'
+          value_type: FLOAT
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.pool_task_count
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: 20f39efd8aea4b80a769dfd59ddde42d
+          name: 'XAPI Memory Allocation'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.xapi_allocation_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_allocation_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: cb3fb4bf71194f2bad93e9f6bf81e7ee
+          name: 'XAPI Memory Free'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.xapi_free_memory_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_free_memory_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: cabac9ff64ce4ef68bbcc45dfc3944dc
+          name: 'XAPI Memory Live set'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.xapi_live_memory_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_live_memory_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: a7cec1b2d084415785c52f7d5fc8dc99
+          name: 'XAPI Memory Usage'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.xapi_memory_usage_kib
+          delay: '0'
+          value_type: FLOAT
+          units: B
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_memory_usage_kib
+            -
+              type: MULTIPLIER
+              parameters:
+                - '1024'
+          master_item:
+            key: xapi.host.rrdstats
+        -
+          uuid: c2a79a27d9a948798690dda6f13cbad6
+          name: 'XAPI open file descriptors'
+          type: DEPENDENT
+          key: xapi.host.rrdstats.xapi_open_fds
+          delay: '0'
+          value_type: FLOAT
+          description: 'tapdisk out of ram, reduced IO performance'
+          preprocessing:
+            -
+              type: JSONPATH
+              parameters:
+                - $.xapi_open_fds
+          master_item:
+            key: xapi.host.rrdstats
+      macros:
+        -
+          macro: '{$POOLPASS}'
+          type: SECRET_TEXT
+        -
+          macro: '{$POOLUSER}'
+          value: root
     -
       uuid: fcddd509760548b49a69c44080937006
       template: 'Template Xen XenApi'
@@ -52,12 +606,12 @@ zabbix_export:
                         }
                     };
                     
-                    console.warn("[XAPI integration] inside Login");
+                    //console.warn("[XAPI integration] inside Login");
             
                     req.addHeader('Content-Type: text/xml');
                     resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
                     resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
-                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
                         if (member.name == "Status") {
                             rpcReturn.status = member.value;
                         } else if (member.name == "Value") {
@@ -72,11 +626,11 @@ zabbix_export:
                     var req = new HttpRequest();
                     var rpcReturn = {};
             
-                    console.warn("[XAPI integration] inside makeCall");
+                    //console.warn("[XAPI integration] inside makeCall");
             
                     for (var i=1; i<arguments.length; i++){
                         params.push({"value": { "string": arguments[i]}})
-                        console.warn(JSON.stringify(params));
+                        //console.warn(JSON.stringify(params));
                     };
                     var data_json = {
                         "methodCall": {
@@ -88,7 +642,7 @@ zabbix_export:
                     req.addHeader('Content-Type: text/xml');
                     resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
                     resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
-                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
                         if (member.name == "Status") {
                             rpcReturn.status = member.value;
                         }
@@ -102,8 +656,13 @@ zabbix_export:
                                             if (member.value.boolean == "1") { rpcReturn.value = true; }
                                             else { rpcReturn.value = false; }
                                         }
-                                        if (typeof member.value.array.data  != 'undefined'){
-                                            rpcReturn.value = member.value.array.data.value;
+                                        if (typeof member.value["dateTime.iso8601"] != 'undefined' ){
+                                            rpcReturn.value = member.value["dateTime.iso8601"];
+                                        }
+                                        if (typeof member.value.array  != 'undefined'){
+                                            if (typeof member.value.array.data != 'undefined'){
+                                                rpcReturn.value = member.value.array.data.value;
+                                            }
                                         }
                                     }
                                     if (typeof(member.value) === "string" ){
@@ -112,7 +671,7 @@ zabbix_export:
                                 }
                                 catch (error) {
                                     console.warn("[XAPI integration] makeCall " + error);
-                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member.value));
+                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member));
                                 }
                             }
                         });
@@ -126,6 +685,112 @@ zabbix_export:
                 }
             };
             
+            function retriveStats(uuid,interval){
+                var req = new HttpRequest();
+                var stats = {};
+                var rrdStats = {};
+                var _serverTime = "";
+                var serverTime = null;
+                var epoch;
+            
+                var hostRef = XAPI.makeCall("host.get_all");
+                if (typeof hostRef === "string"){
+                    _serverTime = XAPI.makeCall("host.get_servertime",hostRef);
+                } else {
+                    hostRef.forEach(function (ref){
+                        _serverTime = XAPI.makeCall("host.get_servertime",ref[0]);
+                    })
+                }
+            
+                // 2022-02-22 23:09:54.500+01:00
+                // 2 02 20 22 2T 22:09:54Z
+             
+                serverTime = (  _serverTime.substring(0,4) + "-" + 
+                                _serverTime.substring(4,6) + "-" +
+                                _serverTime.substring(6,8) + " " +
+                                _serverTime.substring(9,17) + "+00:00" )
+            
+                console.warn("epoch" + Date.parse(serverTime));
+                //console.warn("czas " + serverTime);
+            
+                // curl -k --user root:czekolada https://10.112.136.113/rrd_updates?start=`date +%s`&host=true&cf=AVERAGE
+                // &uuid=x
+                // start=epoch
+                // host=true
+                // cf=AVERAGE|MIN|MAX
+            
+               
+            
+                epoch = Date.parse(serverTime);
+                epoch = ((epoch / 1000 ) - interval * 2); 
+            
+                console.warn("-epoch" + epoch);
+            
+            
+                req.setHttpAuth(HTTPAUTH_BASIC, XAPI.user, XAPI.password)
+            
+                //var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + epoch + "&cf=AVERAGE&uuid=" + uuid)
+                var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + 
+                        epoch + "&cf=AVERAGE&interval=" + interval +  "&host=true");
+            
+                console.warn(rrdUrl);
+                rrdStats = JSON.parse(XML.toJson(req.get(rrdUrl)));
+                //stats = (req.get(rrdUrl));
+                
+                console.warn("data.row " + JSON.stringify(rrdStats.xport.data.row));
+            
+                var items = []
+                items = rrdStats.xport.meta.legend.entry;
+            
+                var values = []
+                if (typeof rrdStats.xport.data.row.v != "undefined"){
+                    values = rrdStats.xport.data.row.v
+                    //console.warn("v: "+JSON.stringify(values));
+                } else {
+                    values = rrdStats.xport.data.row[0].v
+                    //console.warn("[0]v: "+JSON.stringify(values));
+                }
+                
+            
+                
+            
+                //console.warn("items: "+JSON.stringify(items));
+                
+            
+                try{
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid
+                        iuuid = items[i].split(':')[2];
+                        //console.warn("uuid: " + iuuid);
+                        stats[iuuid] = {};
+                    };
+                
+                    //console.warn("stats: " + JSON.stringify(stats));
+                
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid,item,value;
+                        iuuid = items[i].split(':')[2];
+                        item = items[i].split(':')[3];
+                        value = values[i];
+                        //console.warn("legend: " + items[i]);
+                        //console.warn("item: " + item);
+                        //console.warn("value: " + value);
+                        stats[iuuid][item] = value;
+                    };
+            
+                }
+                catch (error) {
+                    console.warn("[XAPI integration] ERROR " + error);
+                }
+            
+                //console.warn("stats: " + JSON.stringify(stats));
+                XAPI.makeCall("session.logout");
+                if (typeof stats[uuid] != "undefined" ){
+                    return stats[uuid];
+                } else {
+                    return false
+                }
+            }
             
             function hostDiscovery(){
                 var hosts =[];
@@ -148,6 +813,7 @@ zabbix_export:
                         })
                     })
                 }
+                XAPI.makeCall("session.logout");
                 return hosts;
             }
             
@@ -187,23 +853,21 @@ zabbix_export:
                         })
                     });
                 }
+                XAPI.makeCall("session.logout");
                 return guests;
             };
             
             var params = JSON.parse(value)
-            
-            //console.warn(JSON.stringify(params));
-            
-            
-            // run script with param action = vmdiscovery
+            var uuid = params.uuid
+            var interval = params.interval
+            //var interval = 60 //seconds for agregate
             
             XAPI.address = params.host; // TODO make a setAddress method with http/https trimm
             XAPI.user = params.user; // TODO make a setCredentials method
             XAPI.password = params.password;
             
-            
-            console.warn(params.action);
-            if (XAPI.login().status == "Success"){
+            /*
+                
                 if (params.action == "vmdiscovery") {
                     return (JSON.stringify(vmDiscovery())); 
                     //console.warn(JSON.stringify(vmDiscovery()));
@@ -211,6 +875,22 @@ zabbix_export:
                     return (JSON.stringify(hostDiscovery())); 
             
                 }  else { return false };
+            */
+            
+            
+            
+            console.warn("[XAPI integration] " + params.action);
+            if (XAPI.login().status == "Success"){
+                switch (params.action) {
+                    case 'vmdiscovery':
+                        return (JSON.stringify(vmDiscovery()));
+                    case 'hostdiscovery':
+                        return (JSON.stringify(hostDiscovery()));
+                    case 'retrivevmstats':
+                        return (JSON.stringify(retriveStats(uuid,interval)));
+                    default:
+                        return false;
+                }
             } else { return false};
           host_prototypes:
             -
@@ -221,6 +901,13 @@ zabbix_export:
                 -
                   group:
                     name: Hypervisors
+              templates:
+                -
+                  name: 'Templae Xen XenApi Host'
+              macros:
+                -
+                  macro: '{$HUUID}'
+                  value: '{#HUUID}'
               tags:
                 -
                   tag: uuid
@@ -270,12 +957,12 @@ zabbix_export:
                         }
                     };
                     
-                    console.warn("[XAPI integration] inside Login");
+                    //console.warn("[XAPI integration] inside Login");
             
                     req.addHeader('Content-Type: text/xml');
                     resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
                     resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
-                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
                         if (member.name == "Status") {
                             rpcReturn.status = member.value;
                         } else if (member.name == "Value") {
@@ -290,11 +977,11 @@ zabbix_export:
                     var req = new HttpRequest();
                     var rpcReturn = {};
             
-                    console.warn("[XAPI integration] inside makeCall");
+                    //console.warn("[XAPI integration] inside makeCall");
             
                     for (var i=1; i<arguments.length; i++){
                         params.push({"value": { "string": arguments[i]}})
-                        console.warn(JSON.stringify(params));
+                        //console.warn(JSON.stringify(params));
                     };
                     var data_json = {
                         "methodCall": {
@@ -306,7 +993,7 @@ zabbix_export:
                     req.addHeader('Content-Type: text/xml');
                     resp = JSON.parse(XML.toJson(req.post("https://" + XAPI.address, XML.fromJson(JSON.stringify(data_json)))));
                     resp.methodResponse.params.param.value.struct.member.forEach(function (member) {
-                        console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
+                        //console.warn("[XAPI integration] member \n" + member.name + "\n" + member.value);
                         if (member.name == "Status") {
                             rpcReturn.status = member.value;
                         }
@@ -320,8 +1007,13 @@ zabbix_export:
                                             if (member.value.boolean == "1") { rpcReturn.value = true; }
                                             else { rpcReturn.value = false; }
                                         }
-                                        if (typeof member.value.array.data  != 'undefined'){
-                                            rpcReturn.value = member.value.array.data.value;
+                                        if (typeof member.value["dateTime.iso8601"] != 'undefined' ){
+                                            rpcReturn.value = member.value["dateTime.iso8601"];
+                                        }
+                                        if (typeof member.value.array  != 'undefined'){
+                                            if (typeof member.value.array.data != 'undefined'){
+                                                rpcReturn.value = member.value.array.data.value;
+                                            }
                                         }
                                     }
                                     if (typeof(member.value) === "string" ){
@@ -330,7 +1022,7 @@ zabbix_export:
                                 }
                                 catch (error) {
                                     console.warn("[XAPI integration] makeCall " + error);
-                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member.value));
+                                    console.warn("[XAPI integration] makeCall " + JSON.stringify(member));
                                 }
                             }
                         });
@@ -344,7 +1036,137 @@ zabbix_export:
                 }
             };
             
+            function retriveStats(uuid,interval){
+                var req = new HttpRequest();
+                var stats = {};
+                var rrdStats = {};
+                var _serverTime = "";
+                var serverTime = null;
+                var epoch;
             
+                var hostRef = XAPI.makeCall("host.get_all");
+                if (typeof hostRef === "string"){
+                    _serverTime = XAPI.makeCall("host.get_servertime",hostRef);
+                } else {
+                    hostRef.forEach(function (ref){
+                        _serverTime = XAPI.makeCall("host.get_servertime",ref[0]);
+                    })
+                }
+            
+                // 2022-02-22 23:09:54.500+01:00
+                // 2 02 20 22 2T 22:09:54Z
+             
+                serverTime = (  _serverTime.substring(0,4) + "-" + 
+                                _serverTime.substring(4,6) + "-" +
+                                _serverTime.substring(6,8) + " " +
+                                _serverTime.substring(9,17) + "+00:00" )
+            
+                console.warn("epoch" + Date.parse(serverTime));
+                //console.warn("czas " + serverTime);
+            
+                // curl -k --user root:czekolada https://10.112.136.113/rrd_updates?start=`date +%s`&host=true&cf=AVERAGE
+                // &uuid=x
+                // start=epoch
+                // host=true
+                // cf=AVERAGE|MIN|MAX
+            
+               
+            
+                epoch = Date.parse(serverTime);
+                epoch = ((epoch / 1000 ) - interval * 2); 
+            
+                console.warn("-epoch" + epoch);
+            
+            
+                req.setHttpAuth(HTTPAUTH_BASIC, XAPI.user, XAPI.password)
+            
+                //var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + epoch + "&cf=AVERAGE&uuid=" + uuid)
+                var rrdUrl = ("https://" + XAPI.address + "/rrd_updates?start=" + 
+                        epoch + "&cf=AVERAGE&interval=" + interval +  "&host=true");
+            
+                console.warn(rrdUrl);
+                rrdStats = JSON.parse(XML.toJson(req.get(rrdUrl)));
+                //stats = (req.get(rrdUrl));
+                
+                console.warn("data.row " + JSON.stringify(rrdStats.xport.data.row));
+            
+                var items = []
+                items = rrdStats.xport.meta.legend.entry;
+            
+                var values = []
+                if (typeof rrdStats.xport.data.row.v != "undefined"){
+                    values = rrdStats.xport.data.row.v
+                    //console.warn("v: "+JSON.stringify(values));
+                } else {
+                    values = rrdStats.xport.data.row[0].v
+                    //console.warn("[0]v: "+JSON.stringify(values));
+                }
+                
+            
+                
+            
+                //console.warn("items: "+JSON.stringify(items));
+                
+            
+                try{
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid
+                        iuuid = items[i].split(':')[2];
+                        //console.warn("uuid: " + iuuid);
+                        stats[iuuid] = {};
+                    };
+                
+                    //console.warn("stats: " + JSON.stringify(stats));
+                
+                    for (var i = 0, len = items.length; i < len; i++) {
+                        var iuuid,item,value;
+                        iuuid = items[i].split(':')[2];
+                        item = items[i].split(':')[3];
+                        value = values[i];
+                        //console.warn("legend: " + items[i]);
+                        //console.warn("item: " + item);
+                        //console.warn("value: " + value);
+                        stats[iuuid][item] = value;
+                    };
+            
+                }
+                catch (error) {
+                    console.warn("[XAPI integration] ERROR " + error);
+                }
+            
+                //console.warn("stats: " + JSON.stringify(stats));
+                XAPI.makeCall("session.logout");
+                if (typeof stats[uuid] != "undefined" ){
+                    return stats[uuid];
+                } else {
+                    return false
+                }
+            }
+            
+            function hostDiscovery(){
+                var hosts =[];
+                var hostRef = XAPI.makeCall("host.get_all");
+                if (typeof hostRef === "string"){
+                    //console.warn("host == string");
+                    var hostName = XAPI.makeCall("host.get_hostname",hostRef);
+                    var hostUUID = XAPI.makeCall("host.get_uuid",hostRef);
+                    hosts.push({
+                        '{#HNAME}'  : hostName,
+                        '{#HUUID}'  : hostUUID
+                    })
+                } else {
+                    hostRef.forEach(function (ref){
+                        var hostName = XAPI.makeCall("host.get_hostname",ref);
+                        var hostUUID = XAPI.makeCall("host.get_uuid",ref);
+                        hosts.push({
+                            '{#HNAME}'  : hostName,
+                            '{#HUUID}'  : hostUUID
+                        })
+                    })
+                }
+                XAPI.makeCall("session.logout");
+                return hosts;
+            }
             
             function vmDiscovery(){
                 var guests = [];
@@ -382,25 +1204,44 @@ zabbix_export:
                         })
                     });
                 }
+                XAPI.makeCall("session.logout");
                 return guests;
             };
             
             var params = JSON.parse(value)
-            
-            //console.warn(JSON.stringify(params));
-            
-            
-            // run script with param action = vmdiscovery
+            var uuid = params.uuid
+            var interval = params.interval
+            //var interval = 60 //seconds for agregate
             
             XAPI.address = params.host; // TODO make a setAddress method with http/https trimm
             XAPI.user = params.user; // TODO make a setCredentials method
             XAPI.password = params.password;
             
-            if (XAPI.login().status == "Success"){
+            /*
+                
                 if (params.action == "vmdiscovery") {
                     return (JSON.stringify(vmDiscovery())); 
                     //console.warn(JSON.stringify(vmDiscovery()));
+                } else if (params.action == "hostdiscovery"){
+                    return (JSON.stringify(hostDiscovery())); 
+            
                 }  else { return false };
+            */
+            
+            
+            
+            console.warn("[XAPI integration] " + params.action);
+            if (XAPI.login().status == "Success"){
+                switch (params.action) {
+                    case 'vmdiscovery':
+                        return (JSON.stringify(vmDiscovery()));
+                    case 'hostdiscovery':
+                        return (JSON.stringify(hostDiscovery()));
+                    case 'retrivevmstats':
+                        return (JSON.stringify(retriveStats(uuid,interval)));
+                    default:
+                        return false;
+                }
             } else { return false};
           lifetime: 1d
           host_prototypes:
